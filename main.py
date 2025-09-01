@@ -269,8 +269,9 @@ def clip():
         return "200"
     
     rounds = 1
-    input_path = f'./{video_id}.mp4'
-    output_path = f'./{video_id}_{rounds}.mp4'
+    video_id_safe = video_id.replace('-', '_').replace('~', '_')
+    input_path = f'./{video_id_safe}.mp4'
+    output_path = f'./{video_id_safe}_{rounds}.mp4'
 
     blob = bucket.get_blob(original_blob_name)
     blob.download_to_filename(input_path)
@@ -284,37 +285,45 @@ def clip():
     duration = clip.duration
     file_size = os.path.getsize(input_path)
     
-    current_time = 0
-    chunk_count = 0
+    current_time = int(data.get('current_time', '0'))
+    chunk_count = int(data.get('chunk_count', '0'))
     
     # set chunk duration by validating chunk size output
     
 
-    while chunk_count < 10 and current_time < duration:
         
-        chunk_duration = duration/file_size * 9*1024*1024    
-        while True: #reduce chunk duration until reaching less than 10MB
-            
-            end_time = min(current_time + chunk_duration, duration)
+    chunk_duration = duration/file_size * 9*1024*1024    
+    logger.log_text(f'video {video_id} first guess chunk duration {chunk_duration}')
+    while True: #reduce chunk duration until reaching less than 10MB
         
-            subclip = clip.subclip(current_time, end_time)
-            temp_output_path = os.path.join('./', f"{video_id}_{chunk_count}.mp4")
-            subclip.write_videofile(temp_output_path, codec='libx264', audio_codec='aac', fps=clip.fps)
-            chunk_size = os.path.getsize(temp_output_path)
-            logger.log_text(f'chunk size {chunk_size}')
-            if chunk_size < 9*1024*1024:
-                break
-            chunk_duration = chunk_duration / chunk_size * 9*1024*1024 * 0.9
-            
+        end_time = min(current_time + chunk_duration, duration)
+    
+        subclip = clip.subclip(current_time, end_time)
+        temp_output_path = os.path.join('./', f"{video_id_safe}_{chunk_count}.mp4")
+        subclip.write_videofile(temp_output_path, codec='libx264', audio_codec='aac', fps=clip.fps)
+        chunk_size = os.path.getsize(temp_output_path)
+        logger.log_text(f'chunk size {chunk_size}')
+        if chunk_size < 9*1024*1024:
+            break
+        chunk_duration = chunk_duration / chunk_size * 9*1024*1024 * 0.9
+        logger.log_text(f'video {video_id} updated chunk duration {chunk_duration}')
+        
 
 
-        chunk_blob_name = f'0_clips/{platform}/{video_id}_{chunk_count}.mp4'
-        chunk_blob = bucket.blob(chunk_blob_name)
-        chunk_blob.upload_from_filename(temp_output_path)
-        logger.log_text(f"chunk uploaded to {chunk_blob_name} in {BUCKET_NAME}")
+    chunk_blob_name = f'0_clips/{platform}/{video_id}_{chunk_count}.mp4'
+    chunk_blob = bucket.blob(chunk_blob_name)
+    chunk_blob.upload_from_filename(temp_output_path)
+    logger.log_text(f"chunk uploaded to {chunk_blob_name} in {BUCKET_NAME}")
 
-        current_time = end_time
-        chunk_count += 1
+    if chunk_count == 9 or current_time + chunk_duration >= duration:
+        return "200"
+    os.remove(input_path)
+    os.remove(temp_output_path)
+    
+    data['current_time'] = end_time
+    data['chunk_count'] = chunk_count+1
+    c_task = task(f'/clip', method='POST', params=params, body=data) 
+    response = ct_client.create_task(parent=ct_parent_lower, task=c_task) 
 
 
     return "200"
